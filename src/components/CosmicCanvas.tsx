@@ -8,7 +8,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Stars } from '@react-three/drei';
 import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import * as THREE from 'three';
-import { useGameStore } from '../store/useGameStore';
+import { useGameStore, Vector3, AbilityType } from '../store/useGameStore';
 import { Particles } from './Particles';
 import { ForceFields } from './ForceFields';
 import { OtherPlayers, LocalCursor } from './OtherPlayers';
@@ -17,7 +17,15 @@ import { Territories } from './Territories';
 function SceneInteraction({ mousePosRef }: { mousePosRef: React.MutableRefObject<THREE.Vector3 | null> }) {
   const sendCursor = useGameStore((state) => state.sendCursor);
   const addForce = useGameStore((state) => state.addForce);
+  const canUseAbility = useGameStore((state) => state.canUseAbility);
   const { camera, gl } = useThree();
+
+  const tryUseAbility = (position: Vector3, abilityType: AbilityType) => {
+    if (!canUseAbility(abilityType)) {
+      return;
+    }
+    addForce(position, abilityType);
+  };
 
   useEffect(() => {
     const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
@@ -45,14 +53,17 @@ function SceneInteraction({ mousePosRef }: { mousePosRef: React.MutableRefObject
       // Only trigger on left click or touch
       if (e.button === 0 || e.pointerType === 'touch') {
         const pos = updateMousePos(e.clientX, e.clientY);
-        addForce({ x: pos.x, y: pos.y, z: pos.z }, 'attractor');
+        tryUseAbility({ x: pos.x, y: pos.y, z: pos.z }, 'attractor');
       }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
         if (mousePosRef.current) {
-          addForce({ x: mousePosRef.current.x, y: mousePosRef.current.y, z: mousePosRef.current.z }, 'repulsor');
+          tryUseAbility(
+            { x: mousePosRef.current.x, y: mousePosRef.current.y, z: mousePosRef.current.z },
+            'repulsor'
+          );
         }
       }
     };
@@ -71,7 +82,7 @@ function SceneInteraction({ mousePosRef }: { mousePosRef: React.MutableRefObject
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('contextmenu', handleContextMenu);
     };
-  }, [camera, gl, addForce, sendCursor, mousePosRef]);
+  }, [camera, gl, addForce, canUseAbility, sendCursor, mousePosRef]);
 
   return null;
 }

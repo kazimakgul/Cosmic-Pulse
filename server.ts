@@ -19,6 +19,11 @@ interface Player {
   color: string;
   position: Vector3 | null;
   lastUpdate: number;
+  energy: number;
+  maxEnergy: number;
+  regenPerSecond: number;
+  cooldowns: Record<'attractor' | 'repulsor', number>;
+  lastEnergyTick: number;
 }
 
 interface ForceField {
@@ -55,6 +60,22 @@ const COLORS = [
   '#CC33FF', '#FFFF33', '#FF3333', '#3333FF'
 ];
 
+const PLAYER_MAX_ENERGY = 100;
+const PLAYER_REGEN_PER_SECOND = 20;
+const MAX_ACTIVE_FORCE_FIELDS_PER_PLAYER = 4;
+const ABILITY_CONFIG = {
+  attractor: { energyCost: 25, cooldownMs: 1200 },
+  repulsor: { energyCost: 35, cooldownMs: 1800 }
+} as const;
+
+function updatePlayerEnergy(player: Player, now: number) {
+  const elapsedSeconds = Math.max(0, (now - player.lastEnergyTick) / 1000);
+  if (elapsedSeconds > 0) {
+    player.energy = Math.min(player.maxEnergy, player.energy + elapsedSeconds * player.regenPerSecond);
+    player.lastEnergyTick = now;
+  }
+}
+
 function broadcast(data: any, excludeId?: string) {
   const message = JSON.stringify(data);
   for (const [id, ws] of clients.entries()) {
@@ -79,7 +100,15 @@ async function startServer() {
       id,
       color,
       position: null,
-      lastUpdate: Date.now()
+      lastUpdate: Date.now(),
+      energy: PLAYER_MAX_ENERGY,
+      maxEnergy: PLAYER_MAX_ENERGY,
+      regenPerSecond: PLAYER_REGEN_PER_SECOND,
+      cooldowns: {
+        attractor: 0,
+        repulsor: 0
+      },
+      lastEnergyTick: Date.now()
     };
     
     players.set(id, player);
@@ -92,7 +121,9 @@ async function startServer() {
       color,
       players: Array.from(players.values()),
       forceFields: Array.from(forceFields.values()),
-      territories: Array.from(territories.values())
+      territories: Array.from(territories.values()),
+      abilityConfig: ABILITY_CONFIG,
+      maxActiveForceFieldsPerPlayer: MAX_ACTIVE_FORCE_FIELDS_PER_PLAYER
     }));
 
     // Broadcast new player to others
@@ -112,14 +143,48 @@ async function startServer() {
             p.lastUpdate = Date.now();
           }
         } else if (data.type === 'add_force') {
+          const p = players.get(id);
+          if (!p) {
+            return;
+          }
+
+          const forceType = data.forceType as 'attractor' | 'repulsor';
+          const config = ABILITY_CONFIG[forceType];
+          if (!config) {
+            ws.send(JSON.stringify({ type: 'action_rejected', reason: 'invalid_force_type' }));
+            return;
+          }
+
+          const now = Date.now();
+          updatePlayerEnergy(p, now);
+
+          if (p.energy < config.energyCost) {
+            ws.send(JSON.stringify({ type: 'action_rejected', reason: 'not_enough_energy' }));
+            return;
+          }
+
+          if (p.cooldowns[forceType] > now) {
+            ws.send(JSON.stringify({ type: 'action_rejected', reason: 'ability_on_cooldown' }));
+            return;
+          }
+
+          const activeForceCount = Array.from(forceFields.values()).filter((force) => force.ownerId === id).length;
+          if (activeForceCount >= MAX_ACTIVE_FORCE_FIELDS_PER_PLAYER) {
+            ws.send(JSON.stringify({ type: 'action_rejected', reason: 'max_active_force_fields_reached' }));
+            return;
+          }
+
+          p.energy = Math.max(0, p.energy - config.energyCost);
+          p.cooldowns[forceType] = now + config.cooldownMs;
+
           const forceId = uuidv4();
           const force: ForceField = {
             id: forceId,
             position: data.position,
-            type: data.forceType,
+            type: forceType,
             ownerId: id,
             createdAt: Date.now(),
-            color: data.color
+            color: p.color
           };
           forceFields.set(forceId, force);
           
@@ -170,6 +235,10 @@ async function startServer() {
   // Broadcast loop (20Hz)
   setInterval(() => {
     const now = Date.now();
+
+    for (const player of players.values()) {
+      updatePlayerEnergy(player, now);
+    }
     
     // Clean up old force fields (e.g., after 10.5 seconds to allow client animation)
     let forcesChanged = false;
@@ -184,6 +253,13 @@ async function startServer() {
       type: 'sync',
       players: Array.from(players.values()).filter(p => p.position !== null),
       territories: Array.from(territories.values()),
+      playerStats: Array.from(players.values()).map((p) => ({
+        id: p.id,
+        energy: p.energy,
+        maxEnergy: p.maxEnergy,
+        regenPerSecond: p.regenPerSecond,
+        cooldowns: p.cooldowns
+      })),
       ...(forcesChanged ? { forceFields: Array.from(forceFields.values()) } : {})
     };
 
