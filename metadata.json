@@ -1,0 +1,5 @@
+{
+  "name": "Territory War",
+  "description": "A multiplayer game where you use particles and force fields to capture territories.",
+  "requestFramePermissions": []
+}
