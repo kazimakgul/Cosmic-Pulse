@@ -13,6 +13,9 @@ export default function App() {
   const disconnect = useGameStore((state) => state.disconnect);
   const players = useGameStore((state) => state.players);
   const myColor = useGameStore((state) => state.myColor);
+  const phase = useGameStore((state) => state.phase);
+  const roundEndsAt = useGameStore((state) => state.roundEndsAt);
+  const winningColor = useGameStore((state) => state.winningColor);
 
   useEffect(() => {
     connect();
@@ -22,6 +25,15 @@ export default function App() {
   }, [connect, disconnect]);
 
   const playerCount = Object.keys(players).length + 1;
+  const now = Date.now();
+  const secondsRemaining = roundEndsAt ? Math.max(0, Math.ceil((roundEndsAt - now) / 1000)) : null;
+
+  const phaseLabel = {
+    lobby: 'Waiting for players',
+    countdown: 'Round starts in',
+    in_match: 'Match ends in',
+    post_match: 'Next round in',
+  }[phase];
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-black text-white font-sans">
@@ -53,6 +65,24 @@ export default function App() {
             <Users size={16} className="text-cyan-400" />
             <span className="text-sm font-medium">{playerCount} {playerCount === 1 ? 'Player' : 'Players'}</span>
           </div>
+
+          <div className="bg-black/40 backdrop-blur-md px-4 py-3 rounded-xl border border-white/10 min-w-[220px] text-left">
+            <p className="text-xs uppercase tracking-wider text-gray-400">{phaseLabel}</p>
+            <p className="text-2xl font-semibold text-cyan-300">
+              {secondsRemaining !== null ? `${secondsRemaining}s` : '--'}
+            </p>
+            {phase === 'post_match' && winningColor && (
+              <p className="text-sm mt-1 text-white">
+                Winner: <span className="font-semibold" style={{ color: winningColor }}>{winningColor}</span>
+              </p>
+            )}
+          </div>
+
+          {phase === 'post_match' && (
+            <div className="bg-emerald-500/20 border border-emerald-300/40 rounded-lg px-3 py-2 text-sm text-emerald-100">
+              Next round in {secondsRemaining ?? 0}s
+            </div>
+          )}
         </div>
       </div>
     </div>

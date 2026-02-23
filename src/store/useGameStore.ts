@@ -30,12 +30,32 @@ export interface Territory {
   controllingColor: string | null;
 }
 
+export type GamePhase = 'lobby' | 'countdown' | 'in_match' | 'post_match';
+
+export interface Scoreboard {
+  players: Record<string, number>;
+  colors: Record<string, number>;
+}
+
+export interface MatchMetadata {
+  phase: GamePhase;
+  roundEndsAt: number | null;
+  winningPlayerId: string | null;
+  winningColor: string | null;
+  scoreboard: Scoreboard;
+}
+
 interface GameState {
   myId: string | null;
   myColor: string | null;
   players: Record<string, Player>;
   forceFields: Record<string, ForceField>;
   territories: Record<string, Territory>;
+  phase: GamePhase;
+  roundEndsAt: number | null;
+  winningPlayerId: string | null;
+  winningColor: string | null;
+  scoreboard: Scoreboard;
   ws: WebSocket | null;
   connect: () => void;
   disconnect: () => void;
@@ -50,6 +70,11 @@ export const useGameStore = create<GameState>((set, get) => ({
   players: {},
   forceFields: {},
   territories: {},
+  phase: 'lobby',
+  roundEndsAt: null,
+  winningPlayerId: null,
+  winningColor: null,
+  scoreboard: { players: {}, colors: {} },
   ws: null,
 
   connect: () => {
@@ -84,7 +109,16 @@ export const useGameStore = create<GameState>((set, get) => ({
           });
         }
         
-        set({ players: playersMap, forceFields: forcesMap, territories: terrMap });
+        set({
+          players: playersMap,
+          forceFields: forcesMap,
+          territories: terrMap,
+          phase: data.match?.phase ?? 'lobby',
+          roundEndsAt: data.match?.roundEndsAt ?? null,
+          winningPlayerId: data.match?.winningPlayerId ?? null,
+          winningColor: data.match?.winningColor ?? null,
+          scoreboard: data.match?.scoreboard ?? { players: {}, colors: {} }
+        });
       } else if (data.type === 'player_joined') {
         set((state) => ({
           players: { ...state.players, [data.player.id]: data.player }
@@ -120,7 +154,16 @@ export const useGameStore = create<GameState>((set, get) => ({
             });
           }
           
-          return { players: newPlayers, forceFields: newForces, territories: newTerritories };
+          return {
+            players: newPlayers,
+            forceFields: newForces,
+            territories: newTerritories,
+            phase: data.match?.phase ?? state.phase,
+            roundEndsAt: data.match?.roundEndsAt ?? state.roundEndsAt,
+            winningPlayerId: data.match?.winningPlayerId ?? state.winningPlayerId,
+            winningColor: data.match?.winningColor ?? state.winningColor,
+            scoreboard: data.match?.scoreboard ?? state.scoreboard
+          };
         });
       } else if (data.type === 'force_added') {
         set((state) => ({
@@ -144,7 +187,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { ws } = get();
     if (ws) {
       ws.close();
-      set({ ws: null, players: {}, forceFields: {}, territories: {} });
+      set({
+        ws: null,
+        players: {},
+        forceFields: {},
+        territories: {},
+        phase: 'lobby',
+        roundEndsAt: null,
+        winningPlayerId: null,
+        winningColor: null,
+        scoreboard: { players: {}, colors: {} }
+      });
     }
   },
 

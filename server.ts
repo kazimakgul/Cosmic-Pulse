@@ -38,6 +38,21 @@ interface Territory {
   controllingColor: string | null;
 }
 
+type GamePhase = 'lobby' | 'countdown' | 'in_match' | 'post_match';
+
+interface Scoreboard {
+  players: Record<string, number>;
+  colors: Record<string, number>;
+}
+
+interface MatchMetadata {
+  phase: GamePhase;
+  roundEndsAt: number | null;
+  winningPlayerId: string | null;
+  winningColor: string | null;
+  scoreboard: Scoreboard;
+}
+
 // State
 const players = new Map<string, Player>();
 const forceFields = new Map<string, ForceField>();
@@ -54,6 +69,146 @@ const COLORS = [
   '#FF3366', '#33CCFF', '#FF9933', '#33FF99', 
   '#CC33FF', '#FFFF33', '#FF3333', '#3333FF'
 ];
+
+function getNextPlayerColor() {
+  const usedColors = new Set(Array.from(players.values()).map((p) => p.color));
+  const availableColor = COLORS.find((color) => !usedColors.has(color));
+  if (availableColor) {
+    return availableColor;
+  }
+  return COLORS[Math.floor(Math.random() * COLORS.length)];
+}
+
+const COUNTDOWN_DURATION_MS = 5000;
+const MATCH_DURATION_MS = 45000;
+const POST_MATCH_DURATION_MS = 5000;
+
+const matchMetadata: MatchMetadata = {
+  phase: 'lobby',
+  roundEndsAt: null,
+  winningPlayerId: null,
+  winningColor: null,
+  scoreboard: {
+    players: {},
+    colors: {},
+  }
+};
+
+function serializeMatchMetadata(): MatchMetadata {
+  return {
+    phase: matchMetadata.phase,
+    roundEndsAt: matchMetadata.roundEndsAt,
+    winningPlayerId: matchMetadata.winningPlayerId,
+    winningColor: matchMetadata.winningColor,
+    scoreboard: {
+      players: { ...matchMetadata.scoreboard.players },
+      colors: { ...matchMetadata.scoreboard.colors },
+    }
+  };
+}
+
+function resetRoundState() {
+  for (const territory of territories.values()) {
+    territory.points = 0;
+    territory.controllingColor = null;
+  }
+  forceFields.clear();
+}
+
+function startCountdown(now: number) {
+  matchMetadata.phase = 'countdown';
+  matchMetadata.roundEndsAt = now + COUNTDOWN_DURATION_MS;
+  matchMetadata.winningPlayerId = null;
+  matchMetadata.winningColor = null;
+}
+
+function startMatch(now: number) {
+  matchMetadata.phase = 'in_match';
+  matchMetadata.roundEndsAt = now + MATCH_DURATION_MS;
+}
+
+function getWinningPlayerByColor(color: string): Player | null {
+  for (const player of players.values()) {
+    if (player.color === color) {
+      return player;
+    }
+  }
+  return null;
+}
+
+function endMatch(now: number) {
+  const territoryCounts: Record<string, number> = {};
+  const territoryPoints: Record<string, number> = {};
+
+  for (const territory of territories.values()) {
+    if (!territory.controllingColor) {
+      continue;
+    }
+
+    const color = territory.controllingColor;
+    territoryCounts[color] = (territoryCounts[color] || 0) + 1;
+    territoryPoints[color] = (territoryPoints[color] || 0) + territory.points;
+  }
+
+  let winningColor: string | null = null;
+  let bestTerritoryCount = -1;
+  let bestTotalPoints = -1;
+
+  for (const color of Object.keys(territoryCounts)) {
+    const count = territoryCounts[color] || 0;
+    const points = territoryPoints[color] || 0;
+
+    if (count > bestTerritoryCount || (count === bestTerritoryCount && points > bestTotalPoints)) {
+      winningColor = color;
+      bestTerritoryCount = count;
+      bestTotalPoints = points;
+    }
+  }
+
+  const winningPlayer = winningColor ? getWinningPlayerByColor(winningColor) : null;
+
+  matchMetadata.phase = 'post_match';
+  matchMetadata.roundEndsAt = now + POST_MATCH_DURATION_MS;
+  matchMetadata.winningColor = winningColor;
+  matchMetadata.winningPlayerId = winningPlayer?.id || null;
+
+  if (winningColor) {
+    matchMetadata.scoreboard.colors[winningColor] = (matchMetadata.scoreboard.colors[winningColor] || 0) + 1;
+  }
+
+  if (winningPlayer) {
+    matchMetadata.scoreboard.players[winningPlayer.id] = (matchMetadata.scoreboard.players[winningPlayer.id] || 0) + 1;
+  }
+}
+
+function updateMatchPhase(now: number) {
+  if (players.size === 0) {
+    matchMetadata.phase = 'lobby';
+    matchMetadata.roundEndsAt = null;
+    matchMetadata.winningPlayerId = null;
+    matchMetadata.winningColor = null;
+    return;
+  }
+
+  if (matchMetadata.phase === 'lobby') {
+    resetRoundState();
+    startCountdown(now);
+    return;
+  }
+
+  if (!matchMetadata.roundEndsAt || now < matchMetadata.roundEndsAt) {
+    return;
+  }
+
+  if (matchMetadata.phase === 'countdown') {
+    startMatch(now);
+  } else if (matchMetadata.phase === 'in_match') {
+    endMatch(now);
+  } else if (matchMetadata.phase === 'post_match') {
+    resetRoundState();
+    startCountdown(now);
+  }
+}
 
 function broadcast(data: any, excludeId?: string) {
   const message = JSON.stringify(data);
@@ -73,7 +228,7 @@ async function startServer() {
 
   wss.on('connection', (ws) => {
     const id = uuidv4();
-    const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+    const color = getNextPlayerColor();
     
     const player: Player = {
       id,
@@ -92,7 +247,8 @@ async function startServer() {
       color,
       players: Array.from(players.values()),
       forceFields: Array.from(forceFields.values()),
-      territories: Array.from(territories.values())
+      territories: Array.from(territories.values()),
+      match: serializeMatchMetadata()
     }));
 
     // Broadcast new player to others
@@ -129,6 +285,9 @@ async function startServer() {
             force
           });
         } else if (data.type === 'hit_territory') {
+          if (matchMetadata.phase !== 'in_match') {
+            return;
+          }
           const t = territories.get(data.territoryId);
           const p = players.get(id);
           if (t && p) {
@@ -170,6 +329,7 @@ async function startServer() {
   // Broadcast loop (20Hz)
   setInterval(() => {
     const now = Date.now();
+    updateMatchPhase(now);
     
     // Clean up old force fields (e.g., after 10.5 seconds to allow client animation)
     let forcesChanged = false;
@@ -184,6 +344,7 @@ async function startServer() {
       type: 'sync',
       players: Array.from(players.values()).filter(p => p.position !== null),
       territories: Array.from(territories.values()),
+      match: serializeMatchMetadata(),
       ...(forcesChanged ? { forceFields: Array.from(forceFields.values()) } : {})
     };
 
